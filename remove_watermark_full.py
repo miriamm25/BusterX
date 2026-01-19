@@ -67,7 +67,8 @@ except ImportError:
 
 # Keywords that indicate actual watermarks (not random text in video)
 WATERMARK_KEYWORDS = ['tiktok', 'douyin', '@', 'lite', 'capcut', 'inshot', 'kinemaster',
-                      'viamaker', 'videoleap', 'filmora', 'vllo', 'splice']
+                      'viamaker', 'videoleap', 'filmora', 'vllo', 'splice',
+                      'ai generated', 'ai-generated', 'generated', 'ilusion', 'fakenews']
 
 
 def is_watermark_text(text):
@@ -78,6 +79,108 @@ def is_watermark_text(text):
         if keyword in text_lower:
             return True
     return False
+
+
+def detect_tiktok_logo(frame_rgb, min_area=500, max_area=15000):
+    """
+    Detect TikTok logo by its distinctive cyan/pink color pattern.
+
+    The TikTok logo has a unique combination of:
+    - Cyan/turquoise (RGB: ~0, 242, 234)
+    - Pink/red (RGB: ~254, 44, 85)
+
+    Returns list of bounding boxes (x, y, w, h) where logo is detected.
+    """
+    import cv2
+
+    # Convert to HSV for better color detection
+    frame_hsv = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2HSV)
+
+    # TikTok cyan color range (in HSV)
+    cyan_lower = np.array([80, 150, 150])
+    cyan_upper = np.array([100, 255, 255])
+
+    # TikTok pink/red color range (in HSV)
+    pink_lower = np.array([160, 150, 150])
+    pink_upper = np.array([180, 255, 255])
+
+    # Also check for red (wraps around in HSV)
+    red_lower = np.array([0, 150, 150])
+    red_upper = np.array([10, 255, 255])
+
+    # Create masks for each color
+    cyan_mask = cv2.inRange(frame_hsv, cyan_lower, cyan_upper)
+    pink_mask = cv2.inRange(frame_hsv, pink_lower, pink_upper)
+    red_mask = cv2.inRange(frame_hsv, red_lower, red_upper)
+
+    # Combine pink and red masks
+    magenta_mask = cv2.bitwise_or(pink_mask, red_mask)
+
+    # Dilate masks to connect nearby regions
+    kernel = np.ones((10, 10), np.uint8)
+    cyan_dilated = cv2.dilate(cyan_mask, kernel, iterations=2)
+    magenta_dilated = cv2.dilate(magenta_mask, kernel, iterations=2)
+
+    # Find regions where both colors are nearby (within 50px)
+    # This is characteristic of the TikTok logo
+    combined = cv2.bitwise_and(cyan_dilated, magenta_dilated)
+
+    # Also include original color regions that overlap with combined
+    logo_mask = cv2.bitwise_or(cyan_mask, magenta_mask)
+    logo_mask = cv2.bitwise_and(logo_mask, cv2.dilate(combined, kernel, iterations=3))
+
+    # If no overlap found, try finding isolated cyan+pink regions close together
+    if cv2.countNonZero(logo_mask) < min_area:
+        # Find contours in each color mask
+        cyan_contours, _ = cv2.findContours(cyan_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        magenta_contours, _ = cv2.findContours(magenta_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        logo_regions = []
+        for c_cont in cyan_contours:
+            c_area = cv2.contourArea(c_cont)
+            if c_area < 100:
+                continue
+            c_x, c_y, c_w, c_h = cv2.boundingRect(c_cont)
+            c_center = (c_x + c_w//2, c_y + c_h//2)
+
+            for m_cont in magenta_contours:
+                m_area = cv2.contourArea(m_cont)
+                if m_area < 100:
+                    continue
+                m_x, m_y, m_w, m_h = cv2.boundingRect(m_cont)
+                m_center = (m_x + m_w//2, m_y + m_h//2)
+
+                # Check if centers are close (within 80 pixels)
+                dist = np.sqrt((c_center[0] - m_center[0])**2 + (c_center[1] - m_center[1])**2)
+                if dist < 80:
+                    # Combine bounding boxes
+                    x = min(c_x, m_x)
+                    y = min(c_y, m_y)
+                    w = max(c_x + c_w, m_x + m_w) - x
+                    h = max(c_y + c_h, m_y + m_h) - y
+                    area = w * h
+                    if min_area < area < max_area:
+                        logo_regions.append((x, y, w, h))
+
+        return logo_regions
+
+    # Find contours in logo mask
+    contours, _ = cv2.findContours(logo_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    logo_regions = []
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if min_area < area < max_area:
+            x, y, w, h = cv2.boundingRect(contour)
+            # Add padding
+            pad = 10
+            x = max(0, x - pad)
+            y = max(0, y - pad)
+            w = w + 2 * pad
+            h = h + 2 * pad
+            logo_regions.append((x, y, w, h))
+
+    return logo_regions
 
 
 class FullVideoWatermarkRemover:
@@ -435,7 +538,7 @@ class FullVideoWatermarkRemover:
 
                 frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
-                # Detect watermarks on this specific frame
+                # Detect watermarks on this specific frame (OCR for text)
                 results = self.ocr_reader.readtext(frame_rgb, paragraph=False)
                 watermark_polys = []
 
@@ -444,11 +547,22 @@ class FullVideoWatermarkRemover:
                         pts = np.array(bbox, dtype=np.int32)
                         watermark_polys.append(pts)
 
-                if watermark_polys:
+                # Also detect TikTok logo by color pattern
+                logo_regions = detect_tiktok_logo(frame_rgb)
+                logo_boxes = []
+                for (x, y, w, h) in logo_regions:
+                    # Convert bbox to polygon format
+                    pts = np.array([[x, y], [x+w, y], [x+w, y+h], [x, y+h]], dtype=np.int32)
+                    logo_boxes.append(pts)
+
+                # Combine text and logo detections
+                all_watermarks = watermark_polys + logo_boxes
+
+                if all_watermarks:
                     # Watermark detected - create mask and inpaint
                     frames_with_watermark += 1
                     mask = np.zeros((height, width), dtype=np.uint8)
-                    for pts in watermark_polys:
+                    for pts in all_watermarks:
                         cv2.fillPoly(mask, [pts], 255)
 
                     # Minimal dilation
