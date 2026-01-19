@@ -70,12 +70,16 @@ WATERMARK_KEYWORDS = ['tiktok', 'douyin', '@', 'lite', 'capcut', 'inshot', 'kine
                       'viamaker', 'videoleap', 'filmora', 'vllo', 'splice',
                       'ai generated', 'ai-generated', 'generated', 'ilusion', 'fakenews']
 
+# Only AI-generated labels (for --ai-label-only mode)
+AI_LABEL_KEYWORDS = ['ai generated', 'ai-generated', 'generated', 'ilusion', 'fakenews',
+                     'ai gen', 'a]generated', 'al-generated', 'al generated']
 
-def is_watermark_text(text):
+
+def is_watermark_text(text, ai_label_only=False):
     """Check if detected text is likely a watermark (not random video content)."""
     text_lower = text.lower().strip()
-    # Check for watermark keywords
-    for keyword in WATERMARK_KEYWORDS:
+    keywords = AI_LABEL_KEYWORDS if ai_label_only else WATERMARK_KEYWORDS
+    for keyword in keywords:
         if keyword in text_lower:
             return True
     return False
@@ -498,13 +502,16 @@ class FullVideoWatermarkRemover:
 
         return True
 
-    def remove_watermark_lama_perframe(self, input_path, output_path):
+    def remove_watermark_lama_perframe(self, input_path, output_path, ai_label_only=False):
         """
         Remove watermark using LaMa with comprehensive detection.
 
         Two-pass approach to avoid flickering:
         1. Scan all frames and collect ALL watermark detections
         2. Merge into ONE consistent mask and apply to ALL frames
+
+        Args:
+            ai_label_only: If True, only detect 'AI generated' labels, skip TikTok/logos
         """
         if not LAMA_AVAILABLE or self.inpainter is None:
             print("LaMa not available")
@@ -541,17 +548,18 @@ class FullVideoWatermarkRemover:
             frame_has_detection = False
 
             for bbox, text, conf in results:
-                if conf >= 0.3 and is_watermark_text(text):
+                if conf >= 0.3 and is_watermark_text(text, ai_label_only=ai_label_only):
                     pts = np.array(bbox, dtype=np.int32)
                     all_polygons.append(pts)
                     frame_has_detection = True
 
-            # Detect TikTok logo by color pattern
-            logo_regions = detect_tiktok_logo(frame_rgb)
-            for (x, y, w, h) in logo_regions:
-                pts = np.array([[x, y], [x+w, y], [x+w, y+h], [x, y+h]], dtype=np.int32)
-                all_polygons.append(pts)
-                frame_has_detection = True
+            # Detect TikTok logo by color pattern (skip if only removing AI labels)
+            if not ai_label_only:
+                logo_regions = detect_tiktok_logo(frame_rgb)
+                for (x, y, w, h) in logo_regions:
+                    pts = np.array([[x, y], [x+w, y], [x+w, y+h], [x, y+h]], dtype=np.int32)
+                    all_polygons.append(pts)
+                    frame_has_detection = True
 
             if frame_has_detection:
                 frames_with_detections += 1
@@ -630,7 +638,7 @@ class FullVideoWatermarkRemover:
 
         return True
 
-    def process_video(self, input_path, output_path, regions=None, per_frame=False):
+    def process_video(self, input_path, output_path, regions=None, per_frame=False, ai_label_only=False):
         """
         Process a single video to remove watermarks.
 
@@ -639,6 +647,7 @@ class FullVideoWatermarkRemover:
             output_path: Output video path
             regions: Optional list of regions. If None, auto-detect.
             per_frame: If True, detect watermarks per-frame (slower but more accurate)
+            ai_label_only: If True, only remove AI-generated labels, not TikTok watermarks
 
         Returns:
             Dictionary with processing results
@@ -648,8 +657,9 @@ class FullVideoWatermarkRemover:
 
         # Per-frame mode: detect and mask watermarks on each frame individually
         if per_frame:
-            print("Using per-frame watermark detection (slower but more accurate)...")
-            success = self.remove_watermark_lama_perframe(input_path, output_path)
+            mode_desc = "AI labels only" if ai_label_only else "all watermarks"
+            print(f"Using per-frame detection ({mode_desc})...")
+            success = self.remove_watermark_lama_perframe(input_path, output_path, ai_label_only=ai_label_only)
             return {
                 "input": str(input_path),
                 "output": str(output_path),
@@ -786,6 +796,11 @@ def main():
         action="store_true",
         help="Detect watermarks per-frame (slower but only masks when watermark appears)"
     )
+    parser.add_argument(
+        "--ai-label-only",
+        action="store_true",
+        help="Only remove 'AI generated' labels, leave TikTok names/logos intact"
+    )
 
     args = parser.parse_args()
 
@@ -816,7 +831,7 @@ def main():
                 print(f"  Region {i+1}: x={x}, y={y}, w={w}, h={h}")
                 print(f"    Texts: {region.get('texts', [])}")
         else:
-            result = remover.process_video(input_path, output_path, manual_regions, per_frame=args.per_frame)
+            result = remover.process_video(input_path, output_path, manual_regions, per_frame=args.per_frame, ai_label_only=args.ai_label_only)
             if result["success"]:
                 print(f"\nSuccess! Output saved to: {output_path}")
             else:
