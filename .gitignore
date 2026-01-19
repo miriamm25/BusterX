@@ -1,0 +1,56 @@
+# Data and videos
+data/
+deepfakes/
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Model weights and checkpoints
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+model.safetensors.index.json
+weights/
+checkpoints/
+
+# Tokenizer/model config files (large)
+tokenizer.json
+merges.txt
+vocab.json
+
+# Virtual environments
+venv/
+.venv/
+
+# Logs and temp files
+*.log
+logs/
+tmp/
+temp/
+.cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
