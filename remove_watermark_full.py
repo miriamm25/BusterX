@@ -500,10 +500,11 @@ class FullVideoWatermarkRemover:
 
     def remove_watermark_lama_perframe(self, input_path, output_path):
         """
-        Remove watermark using LaMa with per-frame OCR detection.
+        Remove watermark using LaMa with comprehensive detection.
 
-        Only masks frames where watermarks are actually detected.
-        Slower but more accurate for intermittent watermarks.
+        Two-pass approach to avoid flickering:
+        1. Scan all frames and collect ALL watermark detections
+        2. Merge into ONE consistent mask and apply to ALL frames
         """
         if not LAMA_AVAILABLE or self.inpainter is None:
             print("LaMa not available")
@@ -523,68 +524,87 @@ class FullVideoWatermarkRemover:
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
+        # ===== PASS 1: Scan all frames and collect all watermark detections =====
+        print(f"Pass 1: Scanning {total_frames} frames for watermarks...")
+        all_polygons = []
+        frames_with_detections = 0
+
+        for i in tqdm(range(total_frames), desc="Scanning frames"):
+            ret, frame_bgr = cap.read()
+            if not ret:
+                break
+
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+
+            # Detect text watermarks with OCR
+            results = self.ocr_reader.readtext(frame_rgb, paragraph=False)
+            frame_has_detection = False
+
+            for bbox, text, conf in results:
+                if conf >= 0.3 and is_watermark_text(text):
+                    pts = np.array(bbox, dtype=np.int32)
+                    all_polygons.append(pts)
+                    frame_has_detection = True
+
+            # Detect TikTok logo by color pattern
+            logo_regions = detect_tiktok_logo(frame_rgb)
+            for (x, y, w, h) in logo_regions:
+                pts = np.array([[x, y], [x+w, y], [x+w, y+h], [x, y+h]], dtype=np.int32)
+                all_polygons.append(pts)
+                frame_has_detection = True
+
+            if frame_has_detection:
+                frames_with_detections += 1
+
+        cap.release()
+
+        print(f"Found {len(all_polygons)} watermark regions across {frames_with_detections} frames")
+
+        # If no watermarks found, just copy the original file
+        if not all_polygons:
+            print("No watermarks detected - copying original file to preserve quality")
+            import shutil
+            shutil.copy(str(input_path), str(output_path))
+            return True
+
+        # ===== Create ONE merged mask from all detections =====
+        print("Creating unified mask from all detections...")
+        unified_mask = np.zeros((height, width), dtype=np.uint8)
+        for pts in all_polygons:
+            cv2.fillPoly(unified_mask, [pts], 255)
+
+        # Minimal dilation
+        kernel = np.ones((3, 3), dtype=np.uint8)
+        unified_mask = cv2.dilate(unified_mask, kernel, iterations=1)
+        pil_mask = Image.fromarray(unified_mask)
+
+        # ===== PASS 2: Apply the same mask to ALL frames =====
+        print(f"Pass 2: Applying unified mask to {total_frames} frames...")
+        cap = cv2.VideoCapture(str(input_path))
+
         with tempfile.TemporaryDirectory() as tmpdir:
             frames_dir = Path(tmpdir) / "frames"
             frames_dir.mkdir()
 
-            print(f"Processing {total_frames} frames with per-frame watermark detection...")
-            frames_with_watermark = 0
-            frames_without = 0
-
-            for i in tqdm(range(total_frames), desc="Processing frames"):
+            for i in tqdm(range(total_frames), desc="Inpainting frames"):
                 ret, frame_bgr = cap.read()
                 if not ret:
                     break
 
                 frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                pil_frame = Image.fromarray(frame_rgb)
 
-                # Detect watermarks on this specific frame (OCR for text)
-                results = self.ocr_reader.readtext(frame_rgb, paragraph=False)
-                watermark_polys = []
-
-                for bbox, text, conf in results:
-                    if conf >= 0.3 and is_watermark_text(text):
-                        pts = np.array(bbox, dtype=np.int32)
-                        watermark_polys.append(pts)
-
-                # Also detect TikTok logo by color pattern
-                logo_regions = detect_tiktok_logo(frame_rgb)
-                logo_boxes = []
-                for (x, y, w, h) in logo_regions:
-                    # Convert bbox to polygon format
-                    pts = np.array([[x, y], [x+w, y], [x+w, y+h], [x, y+h]], dtype=np.int32)
-                    logo_boxes.append(pts)
-
-                # Combine text and logo detections
-                all_watermarks = watermark_polys + logo_boxes
-
-                if all_watermarks:
-                    # Watermark detected - create mask and inpaint
-                    frames_with_watermark += 1
-                    mask = np.zeros((height, width), dtype=np.uint8)
-                    for pts in all_watermarks:
-                        cv2.fillPoly(mask, [pts], 255)
-
-                    # Minimal dilation
-                    kernel = np.ones((3, 3), dtype=np.uint8)
-                    mask = cv2.dilate(mask, kernel, iterations=1)
-
-                    pil_frame = Image.fromarray(frame_rgb)
-                    pil_mask = Image.fromarray(mask)
-                    result = self.inpainter(pil_frame, pil_mask)
-                    result_np = np.array(result)
-                    frame_out = cv2.cvtColor(result_np, cv2.COLOR_RGB2BGR)
-                else:
-                    # No watermark - keep original frame
-                    frames_without += 1
-                    frame_out = frame_bgr
+                # Apply the same unified mask to every frame
+                result = self.inpainter(pil_frame, pil_mask)
+                result_np = np.array(result)
+                frame_out = cv2.cvtColor(result_np, cv2.COLOR_RGB2BGR)
 
                 frame_path = frames_dir / f"frame_{i:06d}.png"
                 cv2.imwrite(str(frame_path), frame_out)
 
             cap.release()
 
-            print(f"Frames with watermark: {frames_with_watermark}, without: {frames_without}")
+            print(f"Watermark regions removed: {len(all_polygons)}")
 
             # Encode video
             print("Encoding video...")
