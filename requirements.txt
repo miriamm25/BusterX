@@ -1,0 +1,12 @@
+# Core dependencies
+easyocr>=1.7.0
+decord>=0.6.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+pillow>=9.0.0,<10.0.0
+tqdm>=4.65.0
+torch>=2.0.0
+torchvision>=0.15.0
+
+# LaMa inpainting - install separately with --no-deps
+# uv pip install simple-lama-inpainting --no-deps
