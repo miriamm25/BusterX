@@ -388,8 +388,31 @@ def run_evaluation(evaluator, videos, output_dir, prompts_to_run=None, video_fil
 
         all_results.append(video_result)
 
-        # Save per-video result
-        video_output = output_dir / f"{vid_id}_result.json"
+        # Save per-video results in video folder
+        video_dir = output_dir / vid_id
+        video_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save per-prompt results
+        for prompt_id in prompts_to_run:
+            prompt_result = {
+                "video_id": vid_id,
+                "prompt_id": prompt_id,
+                "prompt_text": PROMPTS[prompt_id],
+                "ground_truth": "FAKE",
+                "metadata": video_result["metadata"],
+                "evaluation_timestamp": video_result["evaluation_timestamp"],
+                "versions": {}
+            }
+            for version_key, version_data in video_result["results"].items():
+                if prompt_id in version_data:
+                    prompt_result["versions"][version_key] = version_data[prompt_id]
+
+            prompt_output = video_dir / f"{prompt_id}_result.json"
+            with open(prompt_output, 'w') as f:
+                json.dump(prompt_result, f, indent=2)
+
+        # Also save combined result for this video
+        video_output = video_dir / "all_prompts.json"
         with open(video_output, 'w') as f:
             json.dump(video_result, f, indent=2)
 
