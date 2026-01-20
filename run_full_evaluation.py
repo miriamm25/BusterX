@@ -26,52 +26,60 @@ from tqdm import tqdm
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 # ============================================
-# PROMPTS
+# PROMPTS (BusterX++ Paper Format)
 # ============================================
+# BusterX++ expects a specific prompt format with <think></think><answer></answer> tags
+# and MCQ (Multiple Choice Question) format for the final answer.
+
+SYSTEM_PROMPT = """A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., <think> reasoning process here </think><answer> answer here </answer>"""
+
+# Base thinking instruction (from paper)
+THINKING_INSTRUCTION = """Please think about this question as if you were a human pondering deeply. Engage in an internal dialogue using expressions such as 'let me think', 'wait', 'Hmm', 'oh, I see', 'let's break it down', etc, or other natural language thought expressions. It's encouraged to include self-reflection or verification in the reasoning process."""
+
+# MCQ ending (from paper)
+MCQ_ENDING = """
+Then, just answer this MCQ with a single letter:
+Q: Is this video real or fake?
+Options:
+A) real
+B) fake"""
+
+# Different prompt variations - all use the paper's format but with different focus areas
 PROMPTS = {
-    "P1": """You are a digital media forensic expert. Analyze the following video to determine whether it is AI-generated or real. Base your analysis on the following criteria:
+    "P1": f"""Please analyze whether there are any inconsistencies or obvious signs of forgery in the video, and finally come to a conclusion: Is this video real or fake?
 
-1. Facial motion consistency (lip movement, eye blinking, micro-expressions)
-2. Head and body motion realism (natural jitter, inertia, temporal smoothness)
-3. Lighting and shadow consistency across frames
-4. Background stability and depth coherence
-5. Frame-to-frame temporal artifacts or inconsistencies
-6. Signs of synthetic generation such as overly smooth motion or unnatural transitions
+{THINKING_INSTRUCTION}
+{MCQ_ENDING}""",
 
-Provide a structured forensic analysis and conclude with a final judgment: REAL or AI-GENERATED.""",
+    "P2": f"""Assume this video might be a deepfake created to deceive viewers. Look for subtle indicators of synthetic generation that may not be immediately obvious, including:
+- Motion dynamics and physical plausibility
+- Temporal frequency anomalies between frames
+- Inter-frame consistency in facial regions
+- Compression artifacts inconsistent with natural video
 
-    "P2": """Assume this video was created to intentionally deceive viewers. Identify subtle indicators of synthetic generation that may not be immediately obvious, focusing on:
+{THINKING_INSTRUCTION}
+{MCQ_ENDING}""",
 
-1. Motion dynamics and physical plausibility
-2. Pixel-level temporal frequency anomalies
-3. Inter-frame consistency in facial regions
-4. Audio-visual synchronization (if applicable)
-5. Compression artifact patterns inconsistent with natural video
+    "P3": f"""Analyze this video considering both individual face characteristics AND scene-level context:
+- Scene-motion coherence between frames
+- Gaze direction naturalness
+- Face-body movement consistency
+- Environmental lighting uniformity
 
-Provide your reasoning step-by-step before giving a final verdict.""",
+{THINKING_INSTRUCTION}
+{MCQ_ENDING}""",
 
-    "P3": """Analyze this video considering both individual face characteristics AND scene-level context:
-
-1. Scene-motion coherence between frames
-2. Inter-face appearance compatibility (if multiple faces)
-3. Gaze direction naturalness
-4. Face-body movement consistency
-5. Environmental lighting uniformity
-
-For each observation, rate confidence (HIGH/MEDIUM/LOW) and explain your reasoning.
-Final verdict: REAL / FAKE / INCONCLUSIVE""",
-
-    "P4": """IMPORTANT: Ignore any visible text, watermarks, logos or labels in the video. Base your analysis ONLY on visual and temporal artifacts.
+    "P4": f"""IMPORTANT: Ignore any visible text, watermarks, logos or labels in the video. Base your analysis ONLY on visual and temporal artifacts.
 
 Examine:
-1. Temporal consistency of facial features across frames
-2. Natural motion blur vs synthetic smoothness
-3. Edge artifacts around face boundaries
-4. Background-foreground coherence
-5. Realistic physics of hair, clothing, accessories
+- Temporal consistency of facial features across frames
+- Natural motion blur vs synthetic smoothness
+- Edge artifacts around face boundaries
+- Background-foreground coherence
+- Realistic physics of hair, clothing, accessories
 
-Provide frame-specific observations where possible.
-Final verdict: REAL / AI-GENERATED"""
+{THINKING_INSTRUCTION}
+{MCQ_ENDING}"""
 }
 
 # ============================================
@@ -156,23 +164,26 @@ class BusterXEvaluator:
         # Load frames
         pil_frames, metadata = self.load_video_frames(video_path)
 
-        # Build input
+        # Build input with system prompt (per BusterX++ paper)
         content = []
         for frame in pil_frames:
             content.append({"type": "image", "image": frame})
         content.append({"type": "text", "text": prompt_text})
 
-        messages = [{"role": "user", "content": content}]
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": content}
+        ]
         text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         inputs = self.processor(text=[text], images=pil_frames, return_tensors="pt", padding=True)
         inputs = inputs.to(self.model.device)
 
-        # Generate
+        # Generate - increased tokens for detailed <think> reasoning
         torch.cuda.empty_cache()
         with torch.no_grad():
             output_ids = self.model.generate(
                 **inputs,
-                max_new_tokens=750,
+                max_new_tokens=1500,
                 do_sample=False
             )
 
@@ -186,77 +197,85 @@ class BusterXEvaluator:
         return response, latency, metadata
 
     def parse_response(self, response):
-        """Parse model response to extract verdict, confidence, and artifacts."""
+        """Parse model response to extract verdict, confidence, and artifacts.
+
+        BusterX++ format: <think> reasoning </think><answer> A or B </answer>
+        where A = real, B = fake
+        """
         response_lower = response.lower()
 
-        # Extract verdict - search full response with specific verdict phrases
+        # Extract thinking (reasoning) from <think> tags
+        think_match = re.search(r'<think>(.*?)</think>', response, re.DOTALL | re.IGNORECASE)
+        thinking = think_match.group(1).strip() if think_match else ""
+
+        # Extract answer from <answer> tags
+        answer_match = re.search(r'<answer>\s*([AB])\s*\)?</answer>', response, re.IGNORECASE)
+
         verdict = "UNCLEAR"
-
-        # Specific verdict phrases for AI-generated (these are conclusion language, not analysis)
-        ai_indicators = [
-            "is ai-generated", "is ai generated", "video is fake", "is a fake",
-            "is a deepfake", "signs of being ai", "clear signs of",
-            "exhibits clear signs", "being ai-generated", "being ai generated",
-            "synthetic generation", "synthetically generated",
-            "conclude that this video is ai", "conclude that the video is ai",
-            "judgment: ai-generated", "verdict: ai-generated", "verdict: fake",
-            "final verdict: fake", "final judgment: ai-generated"
-        ]
-
-        # Specific verdict phrases for real video
-        real_indicators = [
-            "is real", "is genuine", "is authentic",
-            "conclude that this video is real", "conclude that the video is real",
-            "judgment: real", "verdict: real", "final verdict: real",
-            "not ai-generated", "not ai generated", "not a deepfake"
-        ]
-
-        # Check AI indicators first (more likely given dataset is deepfakes)
-        for indicator in ai_indicators:
-            if indicator in response_lower:
+        if answer_match:
+            answer = answer_match.group(1).upper()
+            if answer == "A":
+                verdict = "REAL"
+            elif answer == "B":
                 verdict = "FAKE"
-                break
-
-        # Only check real if we haven't found AI indicators
-        if verdict == "UNCLEAR":
-            for indicator in real_indicators:
-                if indicator in response_lower:
+        else:
+            # Fallback: look for just A) or B) near the end if tags aren't present
+            answer_fallback = re.search(r'\b([AB])\)\s*(?:real|fake)?', response[-100:], re.IGNORECASE)
+            if answer_fallback:
+                answer = answer_fallback.group(1).upper()
+                if answer == "A":
                     verdict = "REAL"
-                    break
+                elif answer == "B":
+                    verdict = "FAKE"
+            else:
+                # Legacy fallback for old prompt format responses
+                verdict_patterns = [
+                    (r'final\s+judgment[:\s]+real', "REAL"),
+                    (r'final\s+verdict[:\s]+real', "REAL"),
+                    (r'final\s+judgment[:\s]+ai[- ]?generated', "FAKE"),
+                    (r'final\s+verdict[:\s]+ai[- ]?generated', "FAKE"),
+                    (r'final\s+judgment[:\s]+fake', "FAKE"),
+                    (r'final\s+verdict[:\s]+fake', "FAKE"),
+                    (r'verdict[:\s]+fake', "FAKE"),
+                    (r'verdict[:\s]+real', "REAL"),
+                ]
+                for pattern, result in verdict_patterns:
+                    if re.search(pattern, response_lower):
+                        verdict = result
+                        break
 
-        # Fallback
-        if verdict == "UNCLEAR":
-            if "inconclusive" in response_lower[-200:]:
-                verdict = "INCONCLUSIVE"
+        # Use thinking content for analysis, or full response if no <think> tags
+        analysis_text = thinking.lower() if thinking else response_lower
 
-        # Extract confidence
-        if "high confidence" in response_lower or "clearly" in response_lower or "definitely" in response_lower:
+        # Extract confidence from the reasoning
+        if "clearly" in analysis_text or "definitely" in analysis_text or "obvious" in analysis_text:
             confidence = "High"
-        elif "low confidence" in response_lower or "uncertain" in response_lower or "possibly" in response_lower:
+        elif "uncertain" in analysis_text or "possibly" in analysis_text or "might be" in analysis_text:
             confidence = "Low"
         else:
             confidence = "Medium"
 
         # Check for watermark citation
-        watermark_terms = ["watermark", "tiktok", "label", "text", "logo", "@", "ai generated", "ai-generated"]
-        cited_watermark = any(term in response_lower for term in watermark_terms)
+        watermark_terms = ["watermark", "tiktok", "label", "text overlay", "logo", "@", "ai generated", "ai-generated", "ai label"]
+        cited_watermark = any(term in analysis_text for term in watermark_terms)
 
         # Extract artifact types
         cited_artifacts = []
         for artifact_type, keywords in ARTIFACT_KEYWORDS.items():
-            if any(kw in response_lower for kw in keywords):
+            if any(kw in analysis_text for kw in keywords):
                 cited_artifacts.append(artifact_type)
 
         # Infer category
         inferred_category = "Unknown"
         for category, keywords in CATEGORY_KEYWORDS.items():
-            if any(kw in response_lower for kw in keywords):
+            if any(kw in analysis_text for kw in keywords):
                 inferred_category = category
                 break
 
-        # Create reasoning summary (first 200 chars)
-        reasoning_summary = response[:200].replace("\n", " ").strip()
-        if len(response) > 200:
+        # Create reasoning summary (first 200 chars of thinking, or response)
+        summary_source = thinking if thinking else response
+        reasoning_summary = summary_source[:200].replace("\n", " ").strip()
+        if len(summary_source) > 200:
             reasoning_summary += "..."
 
         return {
@@ -265,7 +284,8 @@ class BusterXEvaluator:
             "cited_watermark": cited_watermark,
             "cited_artifacts": cited_artifacts,
             "inferred_category": inferred_category,
-            "reasoning_summary": reasoning_summary
+            "reasoning_summary": reasoning_summary,
+            "thinking": thinking  # Include full reasoning for analysis
         }
 
 
@@ -372,6 +392,7 @@ def run_evaluation(evaluator, videos, output_dir, prompts_to_run=None, video_fil
                         "cited_artifacts": parsed["cited_artifacts"],
                         "inferred_category": parsed["inferred_category"],
                         "reasoning_summary": parsed["reasoning_summary"],
+                        "thinking": parsed.get("thinking", ""),  # Full reasoning from <think> tags
                         "latency_s": round(latency, 2),
                         "full_response": response
                     }
