@@ -320,7 +320,20 @@ def run_evaluation(evaluator, videos, output_dir, prompts_to_run=None, video_fil
 
     # Filter videos if specified
     if video_filter:
-        videos = {k: v for k, v in videos.items() if k == video_filter}
+        # Parse video filter: can be single (V01), comma-separated (V01,V02,V03), or range (V02-V09)
+        if '-' in video_filter and ',' not in video_filter:
+            # Range format: V02-V09
+            start, end = video_filter.split('-')
+            start_num = int(re.search(r'\d+', start).group())
+            end_num = int(re.search(r'\d+', end).group())
+            video_ids = {f"V{i:02d}" for i in range(start_num, end_num + 1)}
+        elif ',' in video_filter:
+            # Comma-separated: V01,V02,V03
+            video_ids = {v.strip() for v in video_filter.split(',')}
+        else:
+            # Single video
+            video_ids = {video_filter}
+        videos = {k: v for k, v in videos.items() if k in video_ids}
 
     total_runs = sum(len(v) for v in videos.values()) * len(prompts_to_run)
     print(f"\nStarting evaluation:")
@@ -479,7 +492,7 @@ def main():
     parser.add_argument("--prompt", "-p", type=str, choices=["P1", "P2", "P3", "P4", "all"],
                         default="all", help="Which prompt(s) to run")
     parser.add_argument("--video", type=str, default=None,
-                        help="Run only on specific video ID (e.g., V01)")
+                        help="Run only on specific video(s). Comma-separated (V01,V02,V03) or range (V02-V09)")
 
     args = parser.parse_args()
 
