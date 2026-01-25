@@ -1,0 +1,52 @@
+# BusterX++ SFT Training Configuration
+# =====================================
+# Use this config for supervised fine-tuning with LoRA
+
+# Model Settings
+model_path: "l8cv/BusterX_plusplus"  # or local path
+output_dir: "./checkpoints/sft"
+
+# LoRA Configuration
+lora_r: 16                    # Rank of LoRA matrices
+lora_alpha: 32                # Alpha scaling factor
+lora_dropout: 0.05            # Dropout for LoRA layers
+lora_target_modules:          # Modules to apply LoRA
+  - "q_proj"
+  - "k_proj"
+  - "v_proj"
+  - "o_proj"
+  - "gate_proj"
+  - "up_proj"
+  - "down_proj"
+
+# Data Paths
+train_data: "./training_data/train.jsonl"
+val_data: "./training_data/val.jsonl"
+max_samples: null  # Set to limit data for testing (e.g., 1000)
+
+# Video Processing
+num_frames: 16                # Frames to sample per video
+target_fps: 4.0               # Target FPS for sampling
+max_pixels: 147456            # Max pixels for processor (384x384)
+
+# Training Hyperparameters
+batch_size: 1                 # Per-device batch size
+gradient_accumulation_steps: 8  # Effective batch = 8
+learning_rate: 2.0e-5         # Learning rate
+num_epochs: 3                 # Number of epochs
+warmup_ratio: 0.1             # Warmup as fraction of total steps
+weight_decay: 0.01            # Weight decay
+max_grad_norm: 1.0            # Gradient clipping
+
+# Evaluation & Checkpointing
+eval_steps: 500               # Evaluate every N steps
+save_steps: 500               # Save checkpoint every N steps
+logging_steps: 10             # Log metrics every N steps
+
+# Hardware Settings
+fp16: false                   # Use FP16 (not recommended for Qwen2.5-VL)
+bf16: true                    # Use BF16 (recommended)
+gradient_checkpointing: true  # Enable gradient checkpointing
+
+# DeepSpeed (optional - set path for multi-GPU)
+deepspeed: null               # Path to DeepSpeed config or null

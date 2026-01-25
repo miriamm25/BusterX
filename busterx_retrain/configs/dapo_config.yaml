@@ -1,0 +1,74 @@
+# BusterX++ DAPO Training Configuration
+# ======================================
+# Use this config for the full 3-stage DAPO training pipeline
+
+# Model Settings
+model_path: "l8cv/BusterX_plusplus"
+output_dir: "./checkpoints/dapo"
+
+# LoRA Configuration
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target_modules:
+  - "q_proj"
+  - "k_proj"
+  - "v_proj"
+  - "o_proj"
+  - "gate_proj"
+  - "up_proj"
+  - "down_proj"
+
+# Data Paths
+train_data: "./training_data/train.jsonl"
+val_data: "./training_data/val.jsonl"
+
+# Video Processing
+num_frames: 16
+target_fps: 4.0
+max_pixels: 147456
+
+# DAPO Specific Settings
+group_size: 4                 # G: number of outputs per input
+clip_lower: 0.2               # PPO lower clipping bound
+clip_higher: true             # DAPO: remove upper clipping
+dynamic_sampling: true        # Ensure mixed correct/wrong outputs
+token_level_loss: true        # Mask negative advantage tokens
+
+# Training Hyperparameters
+batch_size: 1
+gradient_accumulation_steps: 8
+learning_rate: 1.0e-5         # Lower LR for RL
+num_epochs: 3
+warmup_ratio: 0.1
+max_grad_norm: 1.0
+
+# Generation Settings
+max_new_tokens: 1500          # Max tokens to generate
+temperature: 0.7              # Sampling temperature
+top_p: 0.9                    # Nucleus sampling
+
+# Stage Ratios (must sum to 1.0)
+stage1_ratio: 0.70            # Foundation RL
+stage2_ratio: 0.05            # Thinking Mode Fusion (SFT)
+stage3_ratio: 0.25            # Advanced RL with Thinking Reward
+
+# Reward Configuration
+reward_config:
+  format_reward: 1.0
+  format_penalty: 0.0
+  L_max: 600                  # Max tokens before overlong penalty
+  L_cache: 256                # Graduated penalty range
+  accuracy_reward: 1.0
+  accuracy_penalty: 0.0
+  use_thinking_reward: true   # Use SophiaVL thinking reward model
+
+# Evaluation & Checkpointing
+eval_steps: 500
+save_steps: 500
+logging_steps: 10
+
+# Hardware Settings
+bf16: true
+gradient_checkpointing: true
+deepspeed: null
