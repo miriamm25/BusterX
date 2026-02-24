@@ -59,10 +59,11 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 from PIL import Image
 from decord import VideoReader, cpu
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, DistributedSampler
 from tqdm import tqdm
 from transformers import (
     AutoProcessor,
@@ -525,12 +526,16 @@ class DAPOTrainer:
             next(model.parameters()),
         ).device
         self.logger        = logging.getLogger("dapo")
+        self.rank          = dist.get_rank() if dist.is_initialized() else 0
 
-        # Per-step sample log: all G responses, rewards, advantages
+        # Per-step sample log: all G responses, rewards, advantages (rank 0 only)
         _slog_dir = Path(config.output_dir) / "logs"
         _slog_dir.mkdir(parents=True, exist_ok=True)
-        self._sample_log = open(_slog_dir / "samples.jsonl", "a")
-        self.logger.info(f"Sample log  → {_slog_dir / 'samples.jsonl'}")
+        if self.rank == 0:
+            self._sample_log = open(_slog_dir / "samples.jsonl", "a")
+            self.logger.info(f"Sample log  → {_slog_dir / 'samples.jsonl'}")
+        else:
+            self._sample_log = None
 
     # ------------------------------------------------------------------
     def _make_optimizer_scheduler(self, num_steps: int):
@@ -547,6 +552,8 @@ class DAPOTrainer:
                     mode: str, resp_texts: List[str], rewards: List[float],
                     advantages: List[float], skipped: bool = False) -> None:
         """Log one training sample: all G responses with rewards and advantages."""
+        if self.rank != 0:
+            return
         label_str = "REAL" if label == 0 else "FAKE"
         vid_name  = Path(video_path).name
         sep = "─" * 58
@@ -582,6 +589,8 @@ class DAPOTrainer:
         self._sample_log.flush()
 
     def _save(self, stage_name: str):
+        if self.rank != 0:
+            return
         path = Path(self.config.output_dir) / stage_name / "lora_adapter"
         path.mkdir(parents=True, exist_ok=True)
         self.model.save_pretrained(str(path))
@@ -696,6 +705,10 @@ class DAPOTrainer:
                     accum_samples += 1
 
                 if (global_step + 1) % self.config.gradient_accumulation_steps == 0:
+                    if dist.is_initialized():
+                        for p in self.model.parameters():
+                            if p.grad is not None:
+                                dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
                     torch.nn.utils.clip_grad_norm_(
                         self.model.parameters(), self.config.max_grad_norm
                     )
@@ -770,6 +783,10 @@ class DAPOTrainer:
                 accum_n    += 1
 
                 if (global_step + 1) % self.config.gradient_accumulation_steps == 0:
+                    if dist.is_initialized():
+                        for p in self.model.parameters():
+                            if p.grad is not None:
+                                dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
                     torch.nn.utils.clip_grad_norm_(
                         self.model.parameters(), self.config.max_grad_norm
                     )
@@ -911,6 +928,10 @@ class DAPOTrainer:
                     accum_samples += 1
 
                 if (global_step + 1) % self.config.gradient_accumulation_steps == 0:
+                    if dist.is_initialized():
+                        for p in self.model.parameters():
+                            if p.grad is not None:
+                                dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
                     torch.nn.utils.clip_grad_norm_(
                         self.model.parameters(), self.config.max_grad_norm
                     )
@@ -943,10 +964,15 @@ class DAPOTrainer:
     # ------------------------------------------------------------------
 
     def train(self, train_dataset: DAPODataset, stages: List[int]):
+        sampler = (
+            DistributedSampler(train_dataset, shuffle=True, seed=42)
+            if dist.is_initialized() else None
+        )
         dl = DataLoader(
             train_dataset,
             batch_size=self.config.batch_size,
-            shuffle=True,
+            shuffle=(sampler is None),
+            sampler=sampler,
             num_workers=4,
             pin_memory=True,
             prefetch_factor=2,
@@ -970,7 +996,8 @@ class DAPOTrainer:
         if 3 in stages:
             self.train_stage3(dl, s3)
 
-        self._sample_log.close()
+        if self._sample_log is not None:
+            self._sample_log.close()
         self.logger.info("All requested stages complete.")
         self.logger.info(f"Checkpoints in: {self.config.output_dir}")
 
@@ -1004,6 +1031,11 @@ def main():
     parser.add_argument("--local_rank",   type=int, default=-1,
                         help="Set by DeepSpeed launcher — do not set manually")
     args = parser.parse_args()
+
+    # Distributed setup (when launched via deepspeed --num_gpus=2)
+    if args.local_rank >= 0:
+        dist.init_process_group(backend="nccl")
+        torch.cuda.set_device(args.local_rank)
 
     # Reproducibility
     set_seed(42)
