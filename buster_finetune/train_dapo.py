@@ -953,6 +953,7 @@ def main():
         cfg.model_path, cfg.bf16, cfg.gradient_checkpointing, cfg.max_pixels
     )
     model = apply_lora(model, cfg)
+    model.enable_input_require_grads()   # required for gradient checkpointing + LoRA
 
     # Reward calculator (stage=1 initially; Stage 3 changes it to 3 internally)
     reward_cfg  = RewardConfig()

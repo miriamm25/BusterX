@@ -587,6 +587,7 @@ def setup_model_and_lora(config: SFTConfig):
         bias="none",
     )
     model = get_peft_model(model, lora_config)
+    model.enable_input_require_grads()   # required for gradient checkpointing + LoRA
     model.print_trainable_parameters()
 
     processor = AutoProcessor.from_pretrained(
