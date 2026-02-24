@@ -992,6 +992,8 @@ def main():
     parser.add_argument("--max_samples",  type=int,   default=None,
                         help="Limit dataset to first N samples")
     parser.add_argument("--deepspeed",    default=None)
+    parser.add_argument("--local_rank",   type=int, default=-1,
+                        help="Set by DeepSpeed launcher — do not set manually")
     args = parser.parse_args()
 
     # Reproducibility
