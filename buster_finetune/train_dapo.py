@@ -566,11 +566,11 @@ class DAPOTrainer:
         )
         for i, (txt, r, adv) in enumerate(zip(resp_texts, rewards, adv_list)):
             tag     = "TRAINED" if (not skipped and adv > 0) else "skipped"
-            snippet = txt.replace("\n", " ")[:300]
             self.logger.info(
                 f"    G{i+1}  reward={r:+.2f}  adv={adv:+.4f}  [{tag}]"
             )
-            self.logger.info(f"         {snippet!r}")
+            for line in txt.strip().split("\n"):
+                self.logger.info(f"         {line}")
         self.logger.info(f"  {sep}")
 
         record = {
