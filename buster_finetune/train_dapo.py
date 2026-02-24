@@ -302,10 +302,17 @@ def load_base_model(model_path: str, bf16: bool = True,
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.benchmark        = True
 
+    # With DeepSpeed each rank must own the FULL model on its own GPU.
+    # device_map="auto" would split the model across GPUs (model parallelism)
+    # which conflicts with ZeRO sharding and breaks the 3D conv in the vision encoder.
+    local_rank = int(os.environ.get("LOCAL_RANK", -1))
+    device_map = {"": local_rank} if local_rank >= 0 else "auto"
+    logger.info(f"device_map={device_map}  (LOCAL_RANK={local_rank})")
+
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16 if bf16 else torch.float16,
-        device_map="auto",
+        device_map=device_map,
         trust_remote_code=True,
     )
     if gradient_checkpointing:
@@ -336,10 +343,12 @@ def apply_lora(model, config: DAPOConfig):
 def load_reference_model(model_path: str) -> Qwen2_5_VLForConditionalGeneration:
     logger = logging.getLogger("dapo")
     logger.info(f"Loading reference model (frozen): {model_path}")
+    local_rank = int(os.environ.get("LOCAL_RANK", -1))
+    device_map = {"": local_rank} if local_rank >= 0 else "auto"
     ref = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
-        device_map="auto",
+        device_map=device_map,
         trust_remote_code=True,
     )
     ref.eval()
