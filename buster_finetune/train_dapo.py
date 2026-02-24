@@ -517,6 +517,12 @@ class DAPOTrainer:
         ).device
         self.logger        = logging.getLogger("dapo")
 
+        # Per-step sample log: all G responses, rewards, advantages
+        _slog_dir = Path(config.output_dir) / "logs"
+        _slog_dir.mkdir(parents=True, exist_ok=True)
+        self._sample_log = open(_slog_dir / "samples.jsonl", "a")
+        self.logger.info(f"Sample log  → {_slog_dir / 'samples.jsonl'}")
+
     # ------------------------------------------------------------------
     def _make_optimizer_scheduler(self, num_steps: int):
         optim = torch.optim.AdamW(
@@ -527,6 +533,44 @@ class DAPOTrainer:
         warmup = int(num_steps * self.config.warmup_ratio)
         sched  = get_linear_schedule_with_warmup(optim, warmup, num_steps)
         return optim, sched
+
+    def _log_sample(self, stage: str, step: int, video_path: str, label: int,
+                    mode: str, resp_texts: List[str], rewards: List[float],
+                    advantages: List[float], skipped: bool = False) -> None:
+        """Log one training sample: all G responses with rewards and advantages."""
+        label_str = "REAL" if label == 0 else "FAKE"
+        vid_name  = Path(video_path).name
+        sep = "─" * 58
+        adv_list  = advantages if advantages else [0.0] * len(resp_texts)
+
+        self.logger.info(f"  {sep}")
+        self.logger.info(
+            f"  SAMPLE | {stage} step={step} | {vid_name} | GT={label_str} "
+            f"| mode={mode} | dynamic_skip={skipped}"
+        )
+        for i, (txt, r, adv) in enumerate(zip(resp_texts, rewards, adv_list)):
+            tag     = "TRAINED" if (not skipped and adv > 0) else "skipped"
+            snippet = txt.replace("\n", " ")[:300]
+            self.logger.info(
+                f"    G{i+1}  reward={r:+.2f}  adv={adv:+.4f}  [{tag}]"
+            )
+            self.logger.info(f"         {snippet!r}")
+        self.logger.info(f"  {sep}")
+
+        record = {
+            "stage":   stage,
+            "step":    step,
+            "video":   vid_name,
+            "label":   label_str,
+            "mode":    mode,
+            "skipped": skipped,
+            "responses": [
+                {"text": t, "reward": float(r), "advantage": float(a)}
+                for t, r, a in zip(resp_texts, rewards, adv_list)
+            ],
+        }
+        self._sample_log.write(json.dumps(record) + "\n")
+        self._sample_log.flush()
 
     def _save(self, stage_name: str):
         path = Path(self.config.output_dir) / stage_name / "lora_adapter"
@@ -589,15 +633,28 @@ class DAPOTrainer:
                     for t in resp_texts
                 ]
 
+                log_this = (global_step % self.config.logging_steps == 0)
+
                 # --- dynamic sampling filter ---
                 if self.config.dynamic_sampling:
                     if not dynamic_sampling_filter(rewards):
+                        if log_this:
+                            self._log_sample(
+                                "Stage1", global_step, video_path, label,
+                                "think", resp_texts, rewards, [], skipped=True,
+                            )
                         bar.update(1)
                         global_step += 1
                         continue
 
                 # --- advantages ---
                 advantages = compute_advantages(rewards)
+
+                if log_this:
+                    self._log_sample(
+                        "Stage1", global_step, video_path, label,
+                        "think", resp_texts, rewards, list(advantages),
+                    )
 
                 # --- DAPO loss ---
                 step_loss   = torch.tensor(0.0, device=self.device)
@@ -796,13 +853,26 @@ class DAPOTrainer:
                     for t in resp_texts
                 ]
 
+                log_this = (global_step % self.config.logging_steps == 0)
+
                 if self.config.dynamic_sampling:
                     if not dynamic_sampling_filter(rewards):
+                        if log_this:
+                            self._log_sample(
+                                "Stage3", global_step, video_path, label,
+                                mode, resp_texts, rewards, [], skipped=True,
+                            )
                         bar.update(1)
                         global_step += 1
                         continue
 
                 advantages = compute_advantages(rewards)
+
+                if log_this:
+                    self._log_sample(
+                        "Stage3", global_step, video_path, label,
+                        mode, resp_texts, rewards, list(advantages),
+                    )
 
                 step_loss   = torch.tensor(0.0, device=self.device)
                 n_responses = 0
@@ -891,6 +961,7 @@ class DAPOTrainer:
         if 3 in stages:
             self.train_stage3(dl, s3)
 
+        self._sample_log.close()
         self.logger.info("All requested stages complete.")
         self.logger.info(f"Checkpoints in: {self.config.output_dir}")
 
