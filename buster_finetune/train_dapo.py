@@ -196,7 +196,7 @@ class DAPOConfig:
     stage3_ratio: float = 0.25
 
     # Generation
-    max_new_tokens: int   = 1500
+    max_new_tokens: int   = 750    # Paper targets ≤600 tokens (L_max=600, L_cache=256)
     temperature:    float = 0.7
     top_p:          float = 0.9
 
@@ -912,7 +912,7 @@ def main():
                         help="Path to reference model (overrides auto-detection)")
     parser.add_argument("--num_epochs",   type=int,   default=3)
     parser.add_argument("--learning_rate",type=float, default=1e-5)
-    parser.add_argument("--max_new_tokens", type=int, default=1500)
+    parser.add_argument("--max_new_tokens", type=int, default=750)
     parser.add_argument("--max_pixels",   type=int,   default=589_824)
     parser.add_argument("--eval_steps",   type=int,   default=500)
     parser.add_argument("--save_steps",   type=int,   default=500)

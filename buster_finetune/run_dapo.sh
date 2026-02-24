@@ -30,7 +30,7 @@ NUM_EPOCHS=3
 SAVE_STEPS=500
 EVAL_STEPS=500
 MAX_PIXELS=589824    # ≈768². Raise to 1048576 (1024²) on more VRAM.
-MAX_NEW_TOKENS=1500
+MAX_NEW_TOKENS=750   # Paper targets ≤600 tokens (L_max). 750 = L_max + L_cache.
 
 # ---- Parse flags -----------------------------------------------------------
 MODE="single"
