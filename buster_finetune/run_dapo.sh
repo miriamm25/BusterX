@@ -44,6 +44,7 @@ for arg in "$@"; do
     esac
 done
 # Manual two-arg parsing for --stage VALUE
+PREV=""
 for i in "$@"; do
     if [[ "$PREV" == "--stage" ]]; then
         STAGE="$i"
