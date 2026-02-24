@@ -37,9 +37,12 @@ Usage:
 
 import argparse
 import json
+import logging
 import os
 import random
+import sys
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
@@ -541,8 +544,29 @@ class AccuracyCallback(TrainerCallback):
 # Model setup
 # ---------------------------------------------------------------------------
 
+def setup_logging(output_dir: str) -> None:
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = Path(output_dir) / f"train_{ts}.log"
+    fmt = logging.Formatter("%(asctime)s  %(levelname)-8s  %(message)s",
+                            datefmt="%Y-%m-%d %H:%M:%S")
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setFormatter(fmt)
+    root.addHandler(ch)
+    fh = logging.FileHandler(log_path, mode="w")
+    fh.setFormatter(fmt)
+    root.addHandler(fh)
+    logging.info(f"Log file: {log_path}")
+
+
 def setup_model_and_lora(config: SFTConfig):
     print(f"Loading model: {config.model_path}")
+
+    # GPU throughput optimizations
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.benchmark        = True
 
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         config.model_path,
@@ -582,6 +606,9 @@ def train(config: SFTConfig):
     print("=" * 60)
     print("BusterX++ LoRA SFT  –  Deepfake-Eval-2024")
     print("=" * 60)
+
+    # Logging (file + console, tail -f friendly)
+    setup_logging(config.output_dir)
 
     # Global seed
     set_seed(42)
@@ -629,7 +656,9 @@ def train(config: SFTConfig):
         metric_for_best_model="eval_loss",
         greater_is_better=False,
         report_to=["tensorboard"],
-        dataloader_num_workers=2,
+        dataloader_num_workers=4,
+        dataloader_pin_memory=True,
+        dataloader_prefetch_factor=2,
         remove_unused_columns=False,
         gradient_checkpointing=config.gradient_checkpointing,
         deepspeed=config.deepspeed,

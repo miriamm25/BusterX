@@ -11,6 +11,13 @@
 #   bash run_sft.sh           →  single H200 (recommended)
 #   bash run_sft.sh --2gpu    →  2× H200, DeepSpeed ZeRO-2
 #   bash run_sft.sh --smoke   →  10-step smoke test (no GPU quota needed)
+#
+# NOTE: In the 3-stage DAPO pipeline this script serves as Stage 2
+# (thinking-mode fusion).  Run it AFTER Stage 1 DAPO converges.
+# For standalone SFT (without DAPO) run it directly.
+#
+# Live log monitoring:
+#   tail -f checkpoints/sft/logs/train_*.log
 # =============================================================================
 
 set -euo pipefail
@@ -42,6 +49,11 @@ if [[ ! -f "$TRAIN_DATA" || ! -f "$VAL_DATA" ]]; then
     exit 1
 fi
 
+mkdir -p "$(dirname "$OUTPUT_DIR")/sft/logs"
+TS=$(date +%Y%m%d_%H%M%S)
+LOG_FILE="${OUTPUT_DIR}/logs/train_${TS}.log"
+echo "Log: $LOG_FILE"
+
 # ---- Launch ----------------------------------------------------------------
 case $MODE in
 
@@ -54,7 +66,8 @@ case $MODE in
         --max_steps   10                   \
         --max_samples 20                   \
         --eval_steps  5                    \
-        --save_steps  5
+        --save_steps  5                    \
+        2>&1 | tee "checkpoints/smoke/logs/train_${TS}.log"
     echo "Smoke test passed."
     ;;
 
@@ -68,7 +81,8 @@ case $MODE in
         --eval_steps  $EVAL_STEPS                     \
         --save_steps  $SAVE_STEPS                     \
         --max_pixels  $MAX_PIXELS                     \
-        --deepspeed   configs/ds_config_zero2.json
+        --deepspeed   configs/ds_config_zero2.json    \
+        2>&1 | tee "$LOG_FILE"
     ;;
 
   single|*)
@@ -80,7 +94,8 @@ case $MODE in
         --num_epochs  $NUM_EPOCHS     \
         --eval_steps  $EVAL_STEPS     \
         --save_steps  $SAVE_STEPS     \
-        --max_pixels  $MAX_PIXELS
+        --max_pixels  $MAX_PIXELS     \
+        2>&1 | tee "$LOG_FILE"
     ;;
 
 esac
